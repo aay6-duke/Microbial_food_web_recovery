@@ -1,0 +1,337 @@
+---
+title: "Shannon_Bayesian"
+format: html
+editor: visual
+---
+
+## Setup
+
+```{r}
+#| label: setting-up-document 
+
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+library(tidyverse)
+library(brms)
+library(dplyr)
+library(bayesplot)
+library(tidybayes)
+library(posterior)
+library(GGally)
+
+theme_set(theme_classic())
+ 
+df <- read_csv("full_recluster_97p5_filtered.csv")
+
+metric_df_FW <- df %>%
+  mutate(
+    Algae_Presence = case_when(
+      FW %in% c("FW1", "FW2", "FW3", "FW4") ~ "No",
+      FW %in% c("FW5", "FW6", "FW7", "FW8") ~ "Yes"
+    ),
+    number_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "2",
+      FW %in% c("FW2", "FW3", "FW6", "FW7") ~ "1",
+      FW %in% c("FW4", "FW8") ~ "0"
+    ),
+    ID_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "Both",
+      FW %in% c("FW3", "FW7") ~ "Blepharisma",
+      FW %in% c("FW2", "FW6") ~ "Euplotes",
+      FW %in% c("FW4", "FW8") ~ "None"
+    )
+  )
+
+dir.create("models", showWarnings = FALSE)
+
+```
+
+## Calculate Shannon Diversity
+
+```{r}
+#| label: calculate-shannon
+
+# Calculate cluster abundance within each jar and sampling day
+cluster_counts <- metric_df_FW %>%
+  count(
+    Jar,
+    Day,
+    FW,
+    Temperature,
+    Algae_Presence,
+    number_of_predators,
+    ID_of_predators,
+    class,
+    name = "abundance"
+  )
+
+
+# Calculate Shannon diversity from relative cluster abundances
+shannon_df <- cluster_counts %>%
+  group_by(
+    Jar,
+    Day,
+    Temperature,
+    FW,
+    Algae_Presence,
+    number_of_predators,
+    ID_of_predators
+  ) %>%
+  mutate(
+    p = abundance / sum(abundance)
+  ) %>%
+  summarise(
+    shannon = -sum(p * log(p)),
+    .groups = "drop"
+  )
+
+
+# Format variables for statistical analysis
+shannon_df <- shannon_df %>%
+  mutate(
+    Jar = factor(Jar),
+
+    Day = as.numeric(Day),
+
+    Temperature = factor(
+      Temperature,
+      levels = c("Stable", "Warming", "Recovery")
+    ),
+
+    Algae_Presence = factor(
+      Algae_Presence,
+      levels = c("No", "Yes")
+    ),
+
+    ID_of_predators = factor(
+      ID_of_predators,
+      levels = c("None", "Blepharisma", "Euplotes", "Both")
+    ),
+    number_of_predators = factor(
+  number_of_predators,
+  levels = c("0", "1", "2")
+)
+  )
+```
+
+## Shannon General Model
+
+```{r}
+
+## Shannon Diversity Base Model
+
+fit_shannon_base <- brms::brm(
+  shannon ~ Temperature * Day + (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_base,
+  "models/fit_shannon_base.rds"
+)
+```
+
+## Shannon Predator ID
+
+```{r}
+## Shannon Diversity: Predator Identity
+
+fit_shannon_id <- brms::brm(
+  shannon ~ Temperature * Day * ID_of_predators + (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_id,
+  "models/fit_shannon_id.rds"
+)
+```
+
+## Shannon Predator Richness
+
+```{r}
+## Shannon Diversity: Predator Richness
+
+fit_shannon_rich <- brms::brm(
+  shannon ~ Temperature * Day * number_of_predators + (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_rich,
+  "models/fit_shannon_rich.rds"
+)
+```
+
+## Shannon Algae
+
+```{r}
+## Shannon Diversity: Algae
+
+fit_shannon_algae <- brms::brm(
+  shannon ~ Temperature * Day * Algae_Presence + (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_algae,
+  "models/fit_shannon_algae.rds"
+)
+```
+
+## Shannon Richness x Algae
+
+```{r}
+## Shannon Diversity: Predator Richness x Algae
+
+fit_shannon_rich_algae <- brms::brm(
+  shannon ~
+    Temperature * Day +
+    number_of_predators * Algae_Presence * Day +
+    (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_rich_algae,
+  "models/fit_shannon_rich_algae.rds"
+)
+```
+
+## Shannon ID x Algae
+
+```{r}
+## Shannon Diversity: Predator Identity x Algae
+## Candidate Model Comparison
+
+
+# ------------------------------------------------------------------------------
+# Model 1: Separate predator identity and algae interactions
+# ------------------------------------------------------------------------------
+
+# Temperature and time interact separately with predator identity and
+# algae presence, without a predator identity x algae interaction.
+
+fit_shannon_id_separate_interactions <- brms::brm(
+  shannon ~
+    Temperature * Day * ID_of_predators +
+    Temperature * Day * Algae_Presence +
+    (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_id_separate_interactions,
+  "models/fit_shannon_id_separate_interactions.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# Model 2: Four-way interaction
+# ------------------------------------------------------------------------------
+
+# Allow the effects of temperature and time to depend jointly on predator
+# identity and algae presence.
+
+fit_shannon_id_fourway_interaction <- brms::brm(
+  shannon ~
+    Temperature * Day * ID_of_predators * Algae_Presence +
+    (1 | Jar),
+  data = shannon_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  seed = 123
+)
+
+saveRDS(
+  fit_shannon_id_fourway_interaction,
+  "models/fit_shannon_id_fourway_interaction.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# LOO model comparison
+# ------------------------------------------------------------------------------
+
+# Compare out-of-sample predictive performance of the candidate models
+# using approximate leave-one-out cross-validation.
+
+loo_shannon_id_separate <- brms::loo(
+  fit_shannon_id_separate_interactions
+)
+
+loo_shannon_id_fourway <- brms::loo(
+  fit_shannon_id_fourway_interaction
+)
+
+loo_shannon_id_comparison <- loo::loo_compare(
+  loo_shannon_id_separate,
+  loo_shannon_id_fourway
+)
+
+loo_shannon_id_comparison
+
+
+# Save LOO results
+saveRDS(
+  loo_shannon_id_separate,
+  "models/loo_shannon_id_separate_interactions.rds"
+)
+
+saveRDS(
+  loo_shannon_id_fourway,
+  "models/loo_shannon_id_fourway_interaction.rds"
+)
+
+saveRDS(
+  loo_shannon_id_comparison,
+  "models/loo_shannon_id_comparison.rds"
+)
+```

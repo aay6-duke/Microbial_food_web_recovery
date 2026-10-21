@@ -1,0 +1,422 @@
+---
+title: "Beta_Diversity_Bayesian"
+format: html
+---
+
+
+## Setup
+
+```{r}
+#| label: setting-up-document
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+library(tidyverse)
+library(vegan)
+
+df <- read_csv("full_recluster_97p5_filtered.csv")
+
+# Assign experimental treatments from food-web treatment
+metric_df_FW <- df %>%
+  mutate(
+    Algae_Presence = case_when(
+      FW %in% c("FW1", "FW2", "FW3", "FW4") ~ "No",
+      FW %in% c("FW5", "FW6", "FW7", "FW8") ~ "Yes"
+    ),
+    number_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "2",
+      FW %in% c("FW2", "FW3", "FW6", "FW7") ~ "1",
+      FW %in% c("FW4", "FW8") ~ "0"
+    ),
+    ID_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "Both",
+      FW %in% c("FW3", "FW7") ~ "Blepharisma",
+      FW %in% c("FW2", "FW6") ~ "Euplotes",
+      FW %in% c("FW4", "FW8") ~ "None"
+    )
+  )
+
+# Calculate cluster abundance within each jar and sampling day
+cluster_counts <- metric_df_FW %>%
+  count(
+    Jar, Day, FW, Temperature,
+    Algae_Presence,
+    number_of_predators,
+    ID_of_predators,
+    class,
+    name = "abundance"
+  )
+```
+
+
+
+```{r}
+#| label: setting-up-beta
+
+# --- Create community matrix
+community0_df <- cluster_counts %>%
+  mutate(sample_id = paste(Jar, Day, sep = "_")) %>%
+  select(sample_id, class, abundance) %>%
+  pivot_wider(
+    names_from = class,
+    values_from = abundance,
+    values_fill = 0
+  )
+
+## --- Save metadata seperately
+
+metadata <- cluster_counts %>%
+  mutate(sample_id = paste(Jar, Day, sep = "_")) %>%
+  distinct(sample_id, Jar, Day, Temperature,
+           Algae_Presence, number_of_predators, ID_of_predators)
+
+# ---- Convert to matrix for vegan ----
+community_mat <- community_df %>%
+  column_to_rownames("sample_id") %>%
+  as.matrix()
+
+# ---- Bray-Curtis distance ----
+
+
+dist_mat <- vegdist(community_mat, method = "bray")
+
+
+```
+
+```{r}
+#| label: NMDS
+
+
+set.seed(123)
+nmds <- metaMDS(community_mat, distance = "bray", k = 2)
+
+nmds_df <- data.frame(
+  Axis1 = nmds$points[,1],
+  Axis2 = nmds$points[,2],
+  sample_id = rownames(nmds$points)
+) %>%
+  left_join(metadata, by = "sample_id")
+
+ggplot(nmds_df, aes(x = Axis1, y = Axis2, color = Day)) +
+  geom_point(alpha = 0.6) +
+  scale_color_viridis_c() +
+  theme_classic()
+
+```
+```{r}
+#| label: Axis1_Time
+
+#Plot Axis 1 over time
+
+ggplot(nmds_df, aes(x = Day, y = Axis1, color = Temperature)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 1) +
+  theme_classic()
+```
+
+### Base Model
+
+```{r}
+fit_beta_simple <- brm(
+  Axis1 ~ Temperature * Day + (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(fit_beta_simple, "fit_beta_simple.rds")
+```
+
+
+## Predator Richness
+
+```{r}
+fit_beta_rich <- brm(
+  Axis1 ~ Temperature * Day * number_of_predators + (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(fit_beta_rich, "fit_beta_rich.rds")
+```
+
+     
+## Predator ID
+
+
+```{r}
+fit_beta_ID <- brm(
+  Axis1 ~ Temperature * Day * ID_of_predators + (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(fit_beta_id, "fit_beta_id.rds")
+```
+
+
+## Algae
+
+```{r}
+fit_beta_algae <- brm(
+  Axis1 ~ Temperature * Day * Algae_Presence + (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 2,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(fit_beta_algae, "fit_beta_algae.rds")
+```
+
+## Algae x Predator ID
+
+```{r}
+## Algae x Predator Identity: Candidate Model Comparison
+
+# Format variables used in the interaction models
+nmds_df <- nmds_df %>%
+  mutate(
+    Temperature = factor(
+      Temperature,
+      levels = c("Stable", "Warming", "Recovery")
+    ),
+    Day = as.numeric(Day),
+    ID_of_predators = factor(
+      ID_of_predators,
+      levels = c("None", "Blepharisma", "Euplotes", "Both")
+    ),
+    Algae_Presence = factor(
+      Algae_Presence,
+      levels = c("No", "Yes")
+    ),
+    Jar = factor(Jar)
+  )
+
+
+# ------------------------------------------------------------------------------
+# Model 1: Separate predator identity and algae interactions
+# ------------------------------------------------------------------------------
+
+# Temperature and time are allowed to interact separately with predator
+# identity and algae presence, without a predator identity x algae interaction.
+
+fit_beta_separate_interactions <- brms::brm(
+  Axis1 ~
+    Temperature * Day * ID_of_predators +
+    Temperature * Day * Algae_Presence +
+    (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_beta_separate_interactions,
+  "models/fit_beta_separate_interactions.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# Model 2: Four-way interaction
+# ------------------------------------------------------------------------------
+
+# Allow the effects of temperature and time to depend jointly on predator
+# identity and algae presence.
+
+fit_beta_fourway_interaction <- brms::brm(
+  Axis1 ~
+    Temperature * Day * ID_of_predators * Algae_Presence +
+    (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  seed = 123
+)
+
+saveRDS(
+  fit_beta_fourway_interaction,
+  "models/fit_beta_fourway_interaction.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# LOO model comparison
+# ------------------------------------------------------------------------------
+
+# Compare the out-of-sample predictive performance of the candidate models
+# using approximate leave-one-out cross-validation.
+
+loo_separate_interactions <- brms::loo(
+  fit_beta_separate_interactions
+)
+
+loo_fourway_interaction <- brms::loo(
+  fit_beta_fourway_interaction
+)
+
+loo_comparison <- loo::loo_compare(
+  loo_separate_interactions,
+  loo_fourway_interaction
+)
+
+loo_comparison
+
+
+# Save LOO results
+saveRDS(
+  loo_separate_interactions,
+  "models/loo_beta_separate_interactions.rds"
+)
+
+saveRDS(
+  loo_fourway_interaction,
+  "models/loo_beta_fourway_interaction.rds"
+)
+```
+
+## Algae x Predator Richness
+
+```{r}
+## Algae x Predator Richness: Candidate Model Comparison
+
+# Format variables used in the interaction models
+nmds_df <- nmds_df %>%
+  mutate(
+    Temperature = factor(
+      Temperature,
+      levels = c("Stable", "Warming", "Recovery")
+    ),
+    Day = as.numeric(Day),
+    number_of_predators = factor(
+      number_of_predators,
+      levels = c("0", "1", "2")
+    ),
+    Algae_Presence = factor(
+      Algae_Presence,
+      levels = c("No", "Yes")
+    ),
+    Jar = factor(Jar)
+  )
+
+
+# ------------------------------------------------------------------------------
+# Model 1: Separate predator richness and algae interactions
+# ------------------------------------------------------------------------------
+
+# Temperature and time are allowed to interact separately with predator
+# richness and algae presence, without a predator richness x algae interaction.
+
+fit_beta_rich_separate_interactions <- brms::brm(
+  Axis1 ~
+    Temperature * Day * number_of_predators +
+    Temperature * Day * Algae_Presence +
+    (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_beta_rich_separate_interactions,
+  "models/fit_beta_rich_separate_interactions.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# Model 2: Four-way interaction
+# ------------------------------------------------------------------------------
+
+# Allow the effects of temperature and time to depend jointly on predator
+# richness and algae presence.
+
+fit_beta_rich_fourway_interaction <- brms::brm(
+  Axis1 ~
+    Temperature * Day * number_of_predators * Algae_Presence +
+    (1 | Jar),
+  data = nmds_df,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  seed = 123
+)
+
+saveRDS(
+  fit_beta_rich_fourway_interaction,
+  "models/fit_beta_rich_fourway_interaction.rds"
+)
+
+
+# ------------------------------------------------------------------------------
+# LOO model comparison
+# ------------------------------------------------------------------------------
+
+# Compare the out-of-sample predictive performance of the candidate models
+# using approximate leave-one-out cross-validation.
+
+loo_rich_separate_interactions <- brms::loo(
+  fit_beta_rich_separate_interactions
+)
+
+loo_rich_fourway_interaction <- brms::loo(
+  fit_beta_rich_fourway_interaction
+)
+
+loo_rich_comparison <- loo::loo_compare(
+  loo_rich_separate_interactions,
+  loo_rich_fourway_interaction
+)
+
+loo_rich_comparison
+
+
+# Save LOO results
+saveRDS(
+  loo_rich_separate_interactions,
+  "models/loo_beta_rich_separate_interactions.rds"
+)
+
+saveRDS(
+  loo_rich_fourway_interaction,
+  "models/loo_beta_rich_fourway_interaction.rds"
+)
+```
+

@@ -1,0 +1,315 @@
+---
+title: "Algae_Bayesian"
+format: html
+editor: visual
+---
+
+## Setup
+
+```{r}
+#| label: setup
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+#| label: setup
+
+library(tidyverse)
+library(brms)
+library(data.table)
+library(MASS)
+
+dir.create("models", showWarnings = FALSE)
+
+# Full flow-cytometry dataset
+full_data_file <- "All_Flowcytometer.csv"
+
+# Flow-cytometry files containing manually gated reference algae events
+gate_files <- c(
+  "FW8Red_Sample77.csv",
+  "FW5Red_Sample50.csv",
+  "FW8Black_Sample235.csv",
+  "FW8Red_Sample76.csv",
+  "Nov1_235_Algae.csv"
+)
+```
+
+Reference algal events were obtained by manually gating representative flow-cytometry samples using the flow cytometer software. These manually identified events were pooled and used to define the multivariate fluorescence distribution of algae, which was then applied consistently across the complete dataset.
+
+## Identify Algal Events
+
+```{r}
+#| label: identify-algae
+
+# ------------------------------------------------------------------------------
+# Load manually gated reference algae events
+# ------------------------------------------------------------------------------
+
+algae_gate <- data.table::rbindlist(
+  lapply(gate_files, data.table::fread),
+  fill = TRUE
+)
+
+# Standardize column names
+data.table::setnames(
+  algae_gate,
+  gsub("-", "_", names(algae_gate))
+)
+
+
+# ------------------------------------------------------------------------------
+# Load complete flow-cytometry dataset
+# ------------------------------------------------------------------------------
+
+full_data <- data.table::fread(full_data_file)
+
+# Standardize column names
+data.table::setnames(
+  full_data,
+  gsub("-", "_", names(full_data))
+)
+
+
+# ------------------------------------------------------------------------------
+# Identify events with valid fluorescence values
+# ------------------------------------------------------------------------------
+
+valid_fluorescence <-
+  !is.na(full_data$FITC_H) &
+  !is.na(full_data$PerCP_H) &
+  full_data$FITC_H > 0 &
+  full_data$PerCP_H > 0
+
+
+# ------------------------------------------------------------------------------
+# Define algae reference distribution
+# ------------------------------------------------------------------------------
+
+# Log-transform manually gated reference algae events
+algae_gate_t <- data.table::copy(algae_gate)
+
+algae_gate_t[, `:=`(
+  FITC_H = log10(FITC_H),
+  PerCP_H = log10(PerCP_H)
+)]
+
+
+# Estimate robust center and covariance of reference algae events
+robust_cov <- MASS::cov.trob(
+  as.matrix(algae_gate_t[, .(FITC_H, PerCP_H)])
+)
+
+center <- robust_cov$center
+covmat <- robust_cov$cov
+
+
+# ------------------------------------------------------------------------------
+# Classify algae events in complete dataset
+# ------------------------------------------------------------------------------
+
+# Initialize all events as outside the algae classification
+full_data$inside_algae_gate <- FALSE
+full_data$mahalanobis <- NA_real_
+
+
+# Log-transform valid events
+X <- cbind(
+  FITC_H = log10(full_data$FITC_H[valid_fluorescence]),
+  PerCP_H = log10(full_data$PerCP_H[valid_fluorescence])
+)
+
+
+# Calculate Mahalanobis distance
+md <- mahalanobis(
+  X,
+  center = center,
+  cov = covmat
+)
+
+
+# 99% chi-square cutoff for two fluorescence dimensions
+cutoff <- qchisq(
+  0.99,
+  df = 2
+)
+
+
+# Classify events
+full_data$mahalanobis[valid_fluorescence] <- md
+
+full_data$inside_algae_gate[valid_fluorescence] <-
+  md <= cutoff
+
+
+# Retain events classified as algae
+algae <- full_data %>%
+  filter(inside_algae_gate)
+
+```
+
+## Calculate Algae Abundance
+
+```{r}
+#| label: calculate-algae-abundance
+
+# Assign experimental treatments
+full_data <- full_data %>%
+  mutate(
+    Algae_Presence = case_when(
+      FW %in% c("FW1", "FW2", "FW3", "FW4") ~ "No",
+      FW %in% c("FW5", "FW6", "FW7", "FW8") ~ "Yes"
+    ),
+
+    number_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "2",
+      FW %in% c("FW2", "FW3", "FW6", "FW7") ~ "1",
+      FW %in% c("FW4", "FW8") ~ "0"
+    ),
+
+    ID_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "Both",
+      FW %in% c("FW3", "FW7") ~ "Blepharisma",
+      FW %in% c("FW2", "FW6") ~ "Euplotes",
+      FW %in% c("FW4", "FW8") ~ "None"
+    )
+  )
+
+
+# Calculate algae abundance in treatments where algae were experimentally added
+abundance_df <- full_data %>%
+  filter(Algae_Presence == "Yes") %>%
+  group_by(
+    Jar,
+    Day,
+    FW,
+    Temperature,
+    number_of_predators,
+    ID_of_predators
+  ) %>%
+  summarise(
+    abundance = sum(inside_algae_gate),
+    .groups = "drop"
+  )
+
+# Calculate algae abundance for treatments where algae were experimentally added
+abundance_df <- algae %>%
+  filter(Algae_Presence == "Yes") %>%
+  count(
+    Jar,
+    Day,
+    FW,
+    Temperature,
+    number_of_predators,
+    ID_of_predators,
+    name = "abundance"
+  )
+
+
+# Format variables for statistical analysis
+abundance_df <- abundance_df %>%
+  mutate(
+    Jar = factor(Jar),
+
+    Day = as.numeric(Day),
+
+    Temperature = factor(
+      Temperature,
+      levels = c("Stable", "Warming", "Recovery")
+    ),
+
+    number_of_predators = factor(
+      number_of_predators,
+      levels = c("0", "1", "2")
+    ),
+
+    ID_of_predators = factor(
+      ID_of_predators,
+      levels = c("None", "Blepharisma", "Euplotes", "Both")
+    )
+  )
+```
+
+## Base Model
+
+With `Temperature * Day`, you’re fitting:
+
+-   **Intercept** → baseline abundance
+
+-   **Day slope** → overall temporal trend
+
+-   **Temperature effects** → differences at Day = 0 (interpret carefully)
+
+-   **Interaction terms** → how slopes differ by temperature
+
+So biologically:
+
+“Do warming/recovery change the *rate* of algae increase/decrease over time?”
+
+## Algae Abundance Base Model
+
+Algal abundance was modeled using a negative binomial mixed-effects model to account for overdispersion in the count data. Jar was included as a random intercept to account for repeated measurements through time.
+
+```{r}
+
+fit_algae_base <- brms::brm(
+  abundance ~ Temperature * Day + (1 | Jar),
+  data = abundance_df,
+  family = brms::negbinomial(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_algae_base,
+  "models/fit_algae_base.rds"
+)
+```
+
+## Predator ID
+
+```{r}
+## Algae Abundance: Predator Identity
+
+fit_algae_id <- brms::brm(
+  abundance ~ Temperature * Day * ID_of_predators + (1 | Jar),
+  data = abundance_df,
+  family = brms::negbinomial(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_algae_id,
+  "models/fit_algae_id.rds"
+)
+```
+
+## Predator Richness
+
+```{r}
+## Algae Abundance: Predator Richness
+
+fit_algae_rich <- brms::brm(
+  abundance ~ Temperature * Day * number_of_predators + (1 | Jar),
+  data = abundance_df,
+  family = brms::negbinomial(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(
+  fit_algae_rich,
+  "models/fit_algae_rich.rds"
+)
+```

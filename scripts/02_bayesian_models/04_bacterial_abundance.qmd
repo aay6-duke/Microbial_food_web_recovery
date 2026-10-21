@@ -1,0 +1,454 @@
+---
+title: "Bayesian_Bacteria_March2026"
+format: html
+editor: visual
+---
+
+```{r}
+# Core temperature models
+saveRDS(fit_temp, "models/fit_temp.rds")
+
+
+# Predator richness
+saveRDS(fit_rich, "models/fit_rich.rds")
+
+# Predator identity
+saveRDS(fit_id, "models/fit_id.rds")
+
+# Algae
+saveRDS(fit_algae, "models/fit_algae.rds")
+
+# Interactions
+saveRDS(fit_id_alg, "models/fit_id_alg.rds")
+saveRDS(fit_rich_alg, "models/fit_rich_alg.rds")
+```
+
+## Setup
+
+```{r}
+#| label: setting-up-document 
+
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+library(tidyverse)
+library(brms)
+library(bayesplot)
+library(tidybayes)
+library(posterior)
+library(GGally)
+
+theme_set(theme_classic())
+ 
+df <- read_csv("full_recluster_97p5_filtered.csv")
+
+metric_df_FW <- df %>%
+  mutate(
+    Algae_Presence = case_when(
+      FW %in% c("FW1", "FW2", "FW3", "FW4") ~ "No",
+      FW %in% c("FW5", "FW6", "FW7", "FW8") ~ "Yes"
+    ),
+    number_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "2",
+      FW %in% c("FW2", "FW3", "FW6", "FW7") ~ "1",
+      FW %in% c("FW4", "FW8") ~ "0"
+    ),
+    ID_of_predators = case_when(
+      FW %in% c("FW1", "FW5") ~ "Both",
+      FW %in% c("FW3", "FW7") ~ "Blepharisma",
+      FW %in% c("FW2", "FW6") ~ "Euplotes",
+      FW %in% c("FW4", "FW8") ~ "None"
+    )
+  )
+
+```
+
+This code calculates the abundance of each cluster within each jar and sampling day while retaining the associated experimental treatment information. It then sums cluster abundances to obtain the total number of events per jar and day and formats key experimental variables for subsequent statistical analyses.
+
+```{r}
+
+
+# Count number of events per Jar × Day × FW × cluster
+cluster_counts <- metric_df_FW %>%
+  count(Jar, Day, FW, Temperature,
+        Algae_Presence,
+        number_of_predators,
+        ID_of_predators,
+        class,
+        name = "abundance")
+
+jar_totals <- cluster_counts |>
+  dplyr::group_by(
+    Jar, Day, Temperature, FW,
+    Algae_Presence,
+    number_of_predators,
+    ID_of_predators
+  ) |>
+  dplyr::summarise(
+    total_abundance = sum(abundance),
+    .groups = "drop"
+  )
+jar_totals <- jar_totals %>%
+  mutate(
+    Jar = factor(Jar),
+    Day = as.numeric(Day),  # keep numeric for trend
+    Temperature = factor(Temperature, levels = c("Stable", "Warming", "Recovery"))
+  )
+
+jar_totals <- jar_totals %>%
+  mutate(
+    Algae_Presence = factor(Algae_Presence),
+    ID_of_predators = factor(ID_of_predators)
+  )
+
+```
+
+```{r}
+
+# Assess overdispersion to inform count-model error distribution
+cluster_counts %>%
+  group_by(class) %>%
+  summarise(
+    mean_abundance = mean(abundance),
+    var_abundance  = var(abundance)
+  ) %>%
+  ggplot(aes(x = mean_abundance, y = var_abundance)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_log10() +
+  scale_y_log10()
+
+```
+
+## Negative Binomial Mixed-effects Model
+
+Model total abundance as a function of temperature, day and their interaction. Jar is included as a random intercept to account for repeated measurements of the same experimental unit through time. A negative binomial likelihood is used to account for overdispersion in the count data.
+
+## Base Model
+
+```{r}
+
+base_abundance <- brms::brm(
+  total_abundance ~ Temperature * Day + (1 | Jar),    #accounts for repeated measures/jar specific baseline
+  data = jar_totals,
+  family = brms::negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 3000,
+  warmup = 1500,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+
+saveRDS(base_abundance, "base_abundance.rds")
+
+#base_abundance <- readRDS("base_abundance.rds")
+```
+
+### Posteriors Prediction
+
+```{r}
+means_num <- fit_temp %>%
+  epred_draws(newdata = jar_totals)
+
+```
+
+## Predator Richness
+
+Model
+
+```{r}
+colnames(jar_totals)
+```
+
+```{r}
+
+bact_abundance_rich <- brms::brm(
+  total_abundance ~ Temperature * Day * number_of_predators + (1 | Jar),
+  data = jar_totals,
+  family = negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 3000,
+  warmup = 1500,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+```
+
+### Posterior
+
+```{r}
+#saveRDS(bact_abundance_rich, "bact_abundance_rich.rds")
+
+means_rich <- bact_abundance_rich %>%
+  epred_draws(newdata = jar_totals)
+```
+
+## Predator Identity
+
+Model
+
+```{r}
+bact_abundance_id <- brms::brm(
+  total_abundance ~ Temperature * Day * ID_of_predators + (1 | Jar),
+  data = jar_totals,
+  family = negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+```
+
+Posterior
+
+```{r}
+#saveRDS(bact_abundance_id, "bact_abundance_id.rds")
+
+means_id <- bact_abundance_id %>%
+  epred_draws(newdata = jar_totals)
+```
+
+## Algae
+
+Model
+
+```{r}
+bact_abundance_algae <- brms::brm(
+  total_abundance ~ Temperature * Day * Algae_Presence + (1 | Jar),
+  data = jar_totals,
+  family = negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 3000,
+  warmup = 1500,
+  control = list(adapt_delta = 0.95),
+  seed = 123
+)
+```
+
+Posterior
+
+```{r}
+
+saveRDS(bact_abundance_algae, "bact_abundance_algae")
+
+means_algae <- bact_abundance_algae %>%
+  epred_draws(newdata = jar_totals)
+```
+
+## ID x Algae
+
+Model
+
+```{r}
+
+bact_abundance_id_alg <- brms::brm(
+  total_abundance ~ Temperature * Day +
+                    ID_of_predators * Algae_Presence +
+                    (1 | Jar),
+  data = jar_totals,
+  family = negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  seed = 123
+)
+
+saveRDS(bact_abundance_id_alg, "bact_abundance_id_alg.rds")
+```
+
+```{r}
+
+means_id_alg <- bact_abundance_id_alg %>%
+  epred_draws(newdata = jar_totals)
+```
+
+## Richness x Algae
+
+Model
+
+```{r}
+bact_abundance_rich_alg <- brms::brm(
+  total_abundance ~ Temperature * Day +
+                    number_of_predators * Algae_Presence +
+                    (1 | Jar),
+  data = jar_totals,
+  family = negbinomial(),
+  chains = 2,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  seed = 123
+)
+
+saveRDS(bact_abundance_rich_alg, "bact_abundance_rich_alg.rds")
+```
+
+Posterior
+
+```{r}
+
+means_rich_alg <- bact_abundance_rich_alg %>%
+  epred_draws(newdata = jar_totals)
+```
+
+## LOO Comparisons
+
+```{r}
+# Temperature/time can interact separately with predator identity
+# and algae presence, but there is no Predator ID x Algae interaction.
+
+fit_bact_id_separate_interactions <- brms::brm(
+  total_abundance ~
+    Temperature * Day * ID_of_predators +
+    Temperature * Day * Algae_Presence +
+    (1 | Jar),
+  data = jar_totals,
+  family = brms::negbinomial(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.95),
+  save_pars = brms::save_pars(all = TRUE),
+  seed = 123
+)
+
+saveRDS(
+  fit_bact_id_separate_interactions,
+  "models/fit_bact_id_separate_interactions.rds"
+)
+
+# Temperature/time effects can depend jointly on predator identity
+# and algae presence.
+
+fit_bact_id_fourway_interaction <- brms::brm(
+  total_abundance ~
+    Temperature * Day *
+    ID_of_predators *
+    Algae_Presence +
+    (1 | Jar),
+  data = jar_totals,
+  family = brms::negbinomial(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(adapt_delta = 0.99),
+  save_pars = brms::save_pars(all = TRUE),
+  seed = 123
+)
+
+saveRDS(
+  fit_bact_id_fourway_interaction,
+  "models/fit_bact_id_fourway_interaction.rds"
+)
+
+# ------------------------------------------------------------------------------
+# LOO model comparison
+# ------------------------------------------------------------------------------
+
+loo_bact_id_separate_mm <- brms::loo(
+  fit_bact_id_separate_interactions,
+  moment_match = TRUE
+)
+
+loo_bact_id_fourway_mm <- brms::loo(
+  fit_bact_id_fourway_interaction,
+  moment_match = TRUE
+)
+
+
+# Save LOO results
+saveRDS(
+  loo_bact_id_separate_mm,
+  "models/loo_bact_id_separate_interactions.rds"
+)
+
+saveRDS(
+  loo_bact_id_fourway_mm,
+  "models/loo_bact_id_fourway_interaction.rds"
+)
+
+saveRDS(
+  loo_bact_id_comparison,
+  "models/loo_bact_id_comparison.rds"
+)
+```
+
+```{r}
+loo::pareto_k_table(loo_bact_id_separate_mm)
+loo::pareto_k_table(loo_bact_id_fourway_mm)
+```
+
+```{r}
+max(
+  loo::pareto_k_values(
+    loo_bact_id_separate_mm
+  )
+)
+
+max(
+  loo::pareto_k_values(
+    loo_bact_id_fourway_mm
+  )
+)
+```
+
+```{r}
+which(
+  loo::pareto_k_values(
+    loo_bact_id_separate_mm
+  ) > 1
+)
+
+which(
+  loo::pareto_k_values(
+    loo_bact_id_fourway_mm
+  ) > 1
+)
+```
+
+```{r}
+bad_sep <- which(
+  loo::pareto_k_values(
+    loo_bact_id_separate_mm
+  ) > 1
+)
+
+bad_four <- which(
+  loo::pareto_k_values(
+    loo_bact_id_fourway_mm
+  ) > 1
+)
+
+intersect(
+  bad_sep,
+  bad_four
+)
+```
+
+```{r}
+# ==============================================================================
+# Exact LOO refits for remaining problematic observations
+# ==============================================================================
+
+loo_bact_id_separate_final <- brms::reloo(
+  fit_bact_id_separate_interactions,
+  loo = loo_bact_id_separate_mm,
+  k_threshold = 1
+)
+
+loo_bact_id_fourway_final <- brms::reloo(
+  fit_bact_id_fourway_interaction,
+  loo = loo_bact_id_fourway_mm,
+  k_threshold = 1
+)
+```

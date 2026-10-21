@@ -1,0 +1,602 @@
+---
+title: "Pipeline_for_Phenotypic_Clustering_Bacteria"
+format: html
+date: 8/18/2025
+format:
+  html: 
+    df-print: paged 
+    code-fold: false
+    code-tools: true
+editor: visual
+---
+
+## Setup
+
+```{r}
+## Load Libraries
+
+library(ggplot2)
+library(mclust)
+library(dplyr)
+library(data.table)
+library(psych)
+library(tidyverse)
+library(simstudy)
+library(jtools)
+library(plotly)
+library(patchwork)
+library(MASS)
+library("factoextra")
+library(grid)
+library(ggrepel)
+```
+
+```{r}
+## Set working directory
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+
+```
+
+```{r}
+## Load in datafile
+
+df <- fread("All_Flowcytometer_noAlgae.csv") 
+
+set.seed(123)  
+
+#df <- df %>%
+  #dplyr::slice_sample(n = 100000)
+```
+
+```{r}
+#Removing unneeded columns
+
+df1 <- dplyr::select(df, -V1, -...1, -mahalanobis)
+
+df <- df1
+
+#Let's visualize the data before we start
+
+
+plot_size <-  ggplot(df, aes(x=FSC_H, y= SSC_H) ) +
+  geom_bin2d(bins = 100) +
+    scale_fill_continuous(type = "viridis") +
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_bw()
+
+plot_fluoroscence <- ggplot(df, aes(x=FITC_H, y= PerCP_H) ) +
+  geom_bin2d(bins = 100) +
+    scale_fill_continuous(type = "viridis") +
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_bw()
+
+plot_size+plot_fluoroscence
+```
+
+```{r}
+## Logging everything
+
+
+min(df$FITC_H)-0.001
+#
+df_min <- lapply(df[,FSC_H:APC_A],min) %>% unlist(,use.names = T)
+df_min_abs <- lapply(df_min, abs)%>% unlist(,use.names = T)
+
+df_min["FSC_H"]
+logdf <- df%>% mutate(log_FSC_H=log(FSC_H+1),
+                      log_SSC_H=log(SSC_H+1),
+                      log_FITC_H=log(FITC_H+df_min_abs["FITC_H"]+1),
+                      log_PE_H=log(PE_H+df_min_abs["PE_H"]+1),
+                      log_PerCP_H=log(PerCP_H+df_min_abs["PerCP_H"]+1),
+                      log_APC_H=log(APC_H+df_min_abs["APC_H"]+1),
+                      log_FSC_A=log(FSC_A+df_min_abs["FSC_A"]+1),
+                      log_SSC_A=log(SSC_A+df_min_abs["SSC_A"]+1),
+                      log_FITC_A=log(FITC_A+df_min_abs["FITC_A"]+1),
+                      log_PE_A=log(PE_A+df_min_abs["PE_A"]+1),
+                      log_PerCP_A=log(PerCP_A+df_min_abs["PerCP_A"]+1),
+                      log_APC_A=log(APC_A+df_min_abs["APC_A"]+1))
+
+
+
+```
+
+## Multivariate Outlier Removal
+
+```{r}
+
+# Select numeric channels
+logdf_H <- logdf %>%
+  dplyr::select(FSC_H:APC_H)
+
+# Compute robust covariance estimate
+output75_test <- cov.mcd(
+  logdf_H,
+  quantile.used = nrow(logdf_H) * 0.75
+)
+
+saveRDS(output75_test, "output75_test.rds")
+
+# Compute Mahalanobis distances
+mhmcd75_test <- mahalanobis(
+  logdf_H,
+  output75_test$center,
+  output75_test$cov
+)
+
+saveRDS(mhmcd75_test, "mhmcd75_test.rds")
+
+
+
+# Identify outliers
+alpha <- 0.05
+
+cutoff <- qchisq(
+  p = 1 - alpha,
+  df = ncol(logdf_H)
+)
+
+names_outlier_MCD75_test <- which(mhmcd75_test > cutoff)
+excluded_md75_test <- names_outlier_MCD75_test
+
+# Remove outliers
+data_clean_mcd_test <- logdf[-excluded_md75_test, ]
+```
+
+## PCA
+
+```{r}
+clean_log <- data_clean_mcd_test  %>%
+  dplyr::select(starts_with("log_"))
+
+# Perform PCA
+pca_result <- prcomp(clean_log, scale. = TRUE)
+
+# Get summary of PCA
+summary(pca_result)
+
+# to find out loadings
+
+pca_results_indepth <- get_pca_var(pca_result)
+pca_results_indepth$contrib
+
+
+head(pca_result)
+head(pca_result$x)
+dim(pca_result$x)
+
+# Extract PCA scores (coordinates of the points)
+pca_scores <- as.data.frame(pca_result$x)
+
+dim(pca_scores)
+# Extract PCA loadings (directions of the vectors)
+pca_loadings <- as.data.frame(pca_result$rotation)
+
+# Plot PCA
+ggplot(data = as.data.frame(pca_result$x), aes(x = PC1, y = PC2)) +
+  geom_point() +
+  xlab("Principal Component 1") +
+  ylab("Principal Component 2") +
+  ggtitle("PCA Plot") +
+  geom_segment(data = pca_loadings, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5), 
+   arrow = arrow(length = unit(0.3, "cm")), color = "blue") +  
+  geom_text(data = pca_loadings, aes(x = PC1 * 5, y = PC2 * 5, label = rownames(pca_loadings)),
+   color = "red", vjust = 1) +  # Add labels to the vectors
+  labs(title = "PCA Biplot", x = "PC1", y = "PC2") +
+  theme_classic()
+
+
+
+```
+
+```{r}
+# ---- PCA density biplot ----
+
+pca_scores <- as.data.frame(pca_result$x)
+
+pca_loadings <- as.data.frame(pca_result$rotation[, c("PC1", "PC2")])
+pca_loadings$feature <- rownames(pca_loadings)
+
+# scale loading arrows so they are visible on the PCA space
+arrow_scale <- 6
+
+pca_loadings <- pca_loadings %>%
+  mutate(
+    PC1_arrow = PC1 * arrow_scale,
+    PC2_arrow = PC2 * arrow_scale
+  )
+
+pca_biplot_density <- ggplot(
+  pca_scores,
+  aes(x = PC1, y = PC2)
+) +
+
+  geom_bin2d(
+    bins = 250
+  ) +
+
+  scale_fill_viridis_c(
+    option = "magma",
+    trans = "log10",
+    name = "Cell count"
+  ) +
+
+  geom_segment(
+    data = pca_loadings,
+    aes(
+      x = 0,
+      y = 0,
+      xend = PC1_arrow,
+      yend = PC2_arrow
+    ),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.35, "cm")),
+    color = "cyan",
+    linewidth = 1.2
+  ) +
+
+  geom_text(
+    data = pca_loadings,
+    aes(
+      x = PC1_arrow * 1.08,
+      y = PC2_arrow * 1.08,
+      label = feature
+    ),
+    inherit.aes = FALSE,
+    color = "cyan",
+    size = 4.2,
+    fontface = "bold"
+  ) +
+
+  labs(
+    x = "PC1",
+    y = "PC2",
+    fill = "Cell count"
+  ) +
+
+  theme_classic() +
+
+  theme(
+    legend.position = "right",
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 13),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+
+pca_biplot_density
+```
+
+## Initial Clustering
+
+Mclust evaluates Gaussian mixture models across the specified covariance models `modelNames` and numbers of clusters G. The model with the highest BIC is slected automatically; increase or restrict G and/or modelNames as needed for your dataset. Check the BIC plot if you wish to assess or constrain the automatically selected model.
+
+```{r}
+
+#Select out only PC1 and PC2 to reduce dimensionality.
+
+pca_scores <- as.data.frame(pca_result$x)
+
+# Select PC1 and PC2
+pc1_pc2 <- pca_scores[, c("PC1", "PC2")]
+
+# Run mclust
+
+mod50_full <- Mclust(
+  pc1_pc2,
+  G = 1:30,
+  modelNames = "VVV"
+)
+
+saveRDS(mod50_full, "mclust_mcd_noalgae_Test_pipeline.rds")
+
+summary(mod50_full, parameters = TRUE)
+
+
+# Add cluster classification from Mclust to PCA scores
+pc1_pc2$class <- as.factor(mod50_full$classification)
+
+
+
+
+```
+
+```{r}
+# ---- Prepare data for plotting ----
+# pca_result: result of prcomp(clean_log, scale. = TRUE)
+# mod50_full: result of Mclust(pc1_pc2, G = 1:50, ...)
+
+# 1) PCA scores (ensure PC1 & PC2 exist)
+pca_scores <- as.data.frame(pca_result$x)   # PC1, PC2, ...
+if (!all(c("PC1", "PC2") %in% colnames(pca_scores))) {
+  stop("PC1 and PC2 not found in pca_result$x")
+}
+
+# 2) Create a plotting data.frame that includes the Mclust class
+plot_df <- data.frame(PC1 = pca_scores$PC1,
+                      PC2 = pca_scores$PC2,
+                      class = as.factor(mod50_full$classification))  # convert to factor
+
+# 3) PCA loadings for PC1 and PC2
+pca_loadings <- as.data.frame(pca_result$rotation[, c("PC1", "PC2")])
+pca_loadings$feature <- rownames(pca_loadings)
+
+# 4) Scale loadings so arrows appear nicely on the PC scatter
+#    This chooses a scale factor based on the data spread (tweak multiplier if arrows too long/short)
+scale_factor <- 0.7 * max(c(abs(range(plot_df$PC1)), abs(range(plot_df$PC2))))
+pca_loadings$PC1s <- pca_loadings$PC1 * scale_factor
+pca_loadings$PC2s <- pca_loadings$PC2 * scale_factor
+
+# ---- Plot with ggplot2 ----
+library(ggplot2)
+   # for unit()
+
+ggplot(plot_df, aes(x = PC1, y = PC2, color = class)) +
+  geom_point(size = 2, alpha = 0.7) +
+  # arrows from origin to scaled loading coordinates
+  geom_segment(data = pca_loadings,
+               aes(x = 0, y = 0, xend = PC1s, yend = PC2s),
+               arrow = arrow(length = unit(0.3, "cm")), inherit.aes = FALSE) +
+  # labels at arrow tips
+  geom_text(data = pca_loadings,
+            aes(x = PC1s, y = PC2s, label = feature),
+            inherit.aes = FALSE, vjust = -0.5, size = 3) +
+  labs(title = "PCA with Mclust classification",
+       x = "PC1", y = "PC2", color = "Cluster") +
+  theme_classic() +
+  theme(legend.position = "right")
+
+```
+
+## Optional Visualization mclust clusters
+
+```{r}
+
+# Calculate cluster centroids for labeling
+centroids <- plot_df |>
+  dplyr::group_by(class) |>
+  dplyr::summarise(
+    PC1 = mean(PC1),
+    PC2 = mean(PC2),
+    .groups = "drop"
+  )
+
+
+
+ggplot(plot_df, aes(PC1, PC2, color = class)) +
+  geom_point(size = 1, alpha = 0.6) +
+  geom_text_repel(data = centroids,
+                  aes(x = PC1, y = PC2, label = class),
+                  color = "black",
+                  size = 3,
+                  fontface = "bold",
+                  inherit.aes = FALSE,
+                  min.segment.length = 0.2,
+                  segment.size = 0.2) +
+  theme_classic()
+
+
+```
+
+## Remove Machine Noise and Recluster (if needed)
+
+```{r}
+
+## Optional: Remove a Noise Cluster and Recluster
+#
+# If one cluster appears to represent machine noise or debris after visual
+# inspection of the PCA plot, remove that cluster and rerun Mclust on the
+# remaining observations. For this dataset, the noise cluster was Cluster 32.
+
+# Specify the cluster to remove
+noise_cluster <- 32
+
+# Remove the noise cluster from the PCA scores
+keep_idx <- mod50_full$classification != noise_cluster
+
+pc_for_clust <- pca_scores[, c("PC1", "PC2")]
+pc_for_clust_no32 <- pc_for_clust[keep_idx, ]
+
+# Rerun Mclust
+mod_recluster_test <- Mclust(
+  pc_for_clust_no32,
+  G = 1:30,
+  modelNames = "VVV"
+)
+
+saveRDS(mod_recluster_test, "mclust_recluster_test.rds")
+
+# Visualize the reclustered PCA scores
+df_reclust <- data.frame(
+  PC1 = pc_for_clust_no32$PC1,
+  PC2 = pc_for_clust_no32$PC2,
+  class = factor(mod_recluster_test$classification)
+)
+
+ggplot(df_reclust, aes(PC1, PC2, color = class)) +
+  geom_point(size = 1, alpha = 0.8) +
+  theme_classic()
+
+# Expand the new cluster assignments back to the full dataset
+new_full_class_test <- rep(NA, nrow(pc_for_clust))
+new_full_class_test[keep_idx] <- mod_recluster_test$classification
+
+# Attach new cluster assignments
+pca_plot_df_test <- data.frame(
+  pc_for_clust,
+  class_old = factor(mod50_full$classification),
+  class_new = factor(new_full_class_test)
+)
+
+
+data_clean_mcd_test$new_mclust_class <- factor(new_full_class_test)
+
+write.csv(
+  pca_plot_df_test,
+  "pca_scores_with_new_class_test.csv",
+  row.names = FALSE
+)
+
+
+
+```
+
+```{r}
+
+## Visualize without noise cluster
+
+mclust_plot <- ggplot(df_reclust, aes(PC1, PC2, color = class)) +
+  geom_point(
+    size = 0.7,
+    alpha = 0.5
+  ) +
+  labs(
+    x = "PC 1",
+    y = "PC 2"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+
+    axis.title = element_text(
+      size = 18,
+      face = "bold"
+    ),
+
+    axis.text = element_text(
+      size = 14
+    )
+  )
+
+mclust_plot
+```
+
+```{r}
+## Assess clustering uncertainty
+#
+# Mclust assigns each observation to the cluster with the highest posterior probability. The uncertainty value (0–1) reflects confidence in that assignment, with values near 0 indicating high confidence and larger values indicating more ambiguous classifications.
+
+# Add Mclust outputs to the reclustered PCA dataframe
+df_reclust$uncertainty <- mod_recluster_test$uncertainty
+df_reclust$post_max <- apply(mod_recluster_test$z, 1, max)
+df_reclust$class <- factor(mod_recluster_test$classification)
+
+# Summarize uncertainty
+summary(df_reclust$uncertainty)
+summary(df_reclust$post_max)
+
+# View the 10 most confidently classified observations
+df_reclust %>%
+  arrange(uncertainty) %>%
+  head(10)
+
+# View the 10 least confidently classified observations
+df_reclust %>%
+  arrange(desc(uncertainty)) %>%
+  head(10)
+```
+
+## Remove Outliers of each cluster
+
+Calculate the centroid of each Mclust group and remove observations in the upper 2.5% of Euclidean distance from their assigned centroid. This helps remove peripheral observations while preserving the overall cluster structure.
+
+```{r}
+# Calculate cluster centroids
+centroids <- df_reclust %>%
+  group_by(class) %>%
+  summarise(
+    cx = mean(PC1),
+    cy = mean(PC2),
+    .groups = "drop"
+  )
+
+# Calculate distance from each observation to its cluster centroid
+df_reclust2 <- df_reclust %>%
+  left_join(centroids, by = "class") %>%
+  mutate(
+    dist_to_centroid = sqrt((PC1 - cx)^2 + (PC2 - cy)^2)
+  )
+
+# Identify the most distant 2.5% of observations within each cluster
+df_reclust2 <- df_reclust2 %>%
+  group_by(class) %>%
+  mutate(
+    outside_97.5 = dist_to_centroid >
+      quantile(dist_to_centroid, 0.975)
+  ) %>%
+  ungroup()
+
+# Remove cluster outliers
+df_reclust_final <- df_reclust2 %>%
+  filter(!outside_97.5)
+
+## Visualize Cluster Outlier Removal
+
+# Plot before removing cluster outliers
+p_before <- ggplot(df_reclust2, aes(PC1, PC2, color = class)) +
+  geom_point(size = 0.9, alpha = 0.5) +
+  geom_point(
+    data = subset(df_reclust2, outside_97.5),
+    aes(PC1, PC2),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = "yellow",
+    shape = 21,
+    size = 2
+  ) +
+  labs(
+    title = "Before 97.5% Distance Removal",
+    color = "Cluster"
+  ) +
+  theme_classic() +
+  theme(legend.position = "right")
+
+# Plot after removing cluster outliers
+p_after <- ggplot(df_reclust_final, aes(PC1, PC2, color = class)) +
+  geom_point(size = 0.9, alpha = 0.5) +
+  labs(
+    title = "After 97.5% Distance Removal",
+    color = "Cluster"
+  ) +
+  theme_classic() +
+  theme(legend.position = "right")
+
+# Display plots side-by-side with a shared legend
+p_before + p_after 
+```
+
+## Create Final Dataset
+
+```{r}
+## Create Final Dataset
+# export_df contains:
+# - PCA coordinates
+# - Final Mclust cluster assignments
+# - Original flow cytometry measurements and metadata
+# after removal of machine noise and cluster-specific outliers.
+
+
+# Retain metadata for observations remaining after cluster outlier removal
+meta_final_test <- df_clean_no_noise %>%
+  slice(which(!df_reclust2$outside_97.5))
+
+# Combine metadata with PCA coordinates and final cluster assignments
+export_df_test <- bind_cols(
+  df_reclust_final,
+  meta_final_test
+)
+
+# Check dimensions
+table(df_reclust2$outside_97.5)
+nrow(export_df_test)
+
+write.csv(
+  export_df_test,
+  "full_recluster_97p5_filtered_test.csv",
+  row.names = FALSE
+)
+
+```

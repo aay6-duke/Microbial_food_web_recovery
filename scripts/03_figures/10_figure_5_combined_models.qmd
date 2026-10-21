@@ -1,0 +1,962 @@
+---
+title: "Bayesian_Model_Summaries"
+format: html
+---
+
+# Loading in the data models
+
+```{r}
+#| label: setup
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+library(tidyverse)
+library(brms)
+library(tidybayes)
+library(posterior)
+library(bayesplot)
+library(loo)
+library(scales)
+
+theme_set(theme_classic())
+
+```
+
+```{r}
+#| label: load-models
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+# Directory containing final Bayesian model fits
+model_dir <- "Final_Bayesian_Models/Models"
+
+# Bacterial abundance
+fit_bact_id_algae <- readRDS(
+  file.path(model_dir, "bact_abundance_id_alg.rds")
+)
+
+# Shannon diversity candidate models
+fit_shannon_id_separate <- readRDS(
+  file.path(model_dir, "fit_shannon_id_separate_interactions.rds")
+)
+
+fit_shannon_id_fourway <- readRDS(
+  file.path(model_dir, "fit_shannon_id_fourway_interaction.rds")
+)
+
+# Shannon LOO results
+loo_shannon_id_separate <- readRDS(
+  file.path(model_dir, "loo_shannon_id_separate_interactions.rds")
+)
+
+loo_shannon_id_fourway <- readRDS(
+  file.path(model_dir, "loo_shannon_id_fourway_interaction.rds")
+)
+
+loo_shannon_id_comparison <- readRDS(
+  file.path(model_dir, "loo_shannon_id_comparison.rds")
+)
+
+# Beta-diversity candidate models
+fit_beta_id_separate <- readRDS(
+  file.path(model_dir, "fit_beta_separate_interactions.rds")
+)
+
+fit_beta_id_fourway <- readRDS(
+  file.path(model_dir, "fit_beta_fourway_interaction.rds")
+)
+
+# Beta-diversity LOO results
+loo_beta_id_separate <- readRDS(
+  file.path(model_dir, "loo_beta_separate_interactions.rds")
+)
+
+loo_beta_id_fourway <- readRDS(
+  file.path(model_dir, "loo_beta_fourway_interaction.rds")
+)
+
+loo_beta_id_comparison <- readRDS(
+  file.path(model_dir, "loo_beta_ID_comparison.rds")
+)
+
+```
+
+# LOO Model Comparisons
+
+
+```{r}
+# Shannon diversity
+loo::loo_compare(
+  x = list(
+    separate = loo_shannon_id_separate,
+    fourway = loo_shannon_id_fourway
+  )
+)
+
+# Beta diversity
+loo::loo_compare(
+  x = list(
+    separate = loo_beta_id_separate,
+    fourway = loo_beta_id_fourway
+  )
+)
+```
+For Shannon diversity: separate interactions model is preferred, but the predictive difference is small relative to its uncertainty. There is no evidence here that the additional 4-way Temp x Day x Predator ID x Algae interaction improves prediction. So we will use fit_shannon_id_seperate.
+
+For Beta-Diversity: Seperate interactions model is more clearly preferred. 4-way model performs about 9.8 ELPD units worse. For this we will also use fit_beta_id_seperate. 
+
+# Calculate Reversibility Index
+
+```{r}
+#| label: reversibility-predator-id
+
+compute_reversibility_id <- function(draws_df) {
+
+  draws_df %>%
+    group_by(.draw, ID_of_predators) %>%
+    summarise(
+
+      # Change during warming
+      warming_change =
+        mean(.epred[Temperature == "Warming" & Day == 14]) -
+        mean(.epred[Temperature == "Warming" & Day == 7]),
+
+      # Change during cooling
+      cooling_change =
+        mean(.epred[Temperature == "Recovery" & Day == 28]) -
+        mean(.epred[Temperature == "Recovery" & Day == 21]),
+
+      # Stable-treatment change during warming
+      stable_warming =
+        mean(.epred[Temperature == "Stable" & Day == 14]) -
+        mean(.epred[Temperature == "Stable" & Day == 7]),
+
+      # Stable-treatment change during cooling
+      stable_cooling =
+        mean(.epred[Temperature == "Stable" & Day == 28]) -
+        mean(.epred[Temperature == "Stable" & Day == 21]),
+
+      .groups = "drop"
+    ) %>%
+    mutate(
+      warming_corrected =
+        warming_change - stable_warming,
+
+      cooling_corrected =
+        cooling_change - stable_cooling,
+
+      reversibility =
+        cooling_corrected - warming_corrected
+    )
+}
+```
+
+# Top-Down Model (Figure 4)
+##Create Prediction Grid
+
+```{r}
+newdata_id <- expand.grid(
+  Temperature = c(
+    "Stable",
+    "Warming",
+    "Recovery"
+  ),
+  Day = c(7, 14, 21, 28),
+  Jar = NA,
+  ID_of_predators = c(
+    "None",
+    "Blepharisma",
+    "Euplotes",
+    "Both"
+  )
+)
+```
+
+###Bacterial Abundance
+
+```{r}
+draws_abundance_id <- fit_bact_id %>%
+  epred_draws(
+    newdata = newdata_id,
+    re_formula = NA
+  )
+
+contrast_abundance_id <- compute_reversibility_id(
+  draws_abundance_id
+) %>%
+  mutate(metric = "Abundance")
+
+```
+
+###Bacterial Diversity
+```{r}
+draws_shannon_id <- fit_shannon_id %>%
+  epred_draws(
+    newdata = newdata_id,
+    re_formula = NA
+  )
+
+contrast_shannon_id <- compute_reversibility_id(
+  draws_shannon_id
+) %>%
+  mutate(metric = "Shannon")
+```
+
+### Bacterial Composition
+```{r}
+draws_beta_id <- fit_beta_id %>%
+  epred_draws(
+    newdata = newdata_id,
+    re_formula = NA
+  )
+
+contrast_beta_id <- compute_reversibility_id(
+  draws_beta_id
+) %>%
+  mutate(metric = "Beta")
+
+```
+### Algal Abundance
+```{r}
+draws_algae_id <- fit_algae_id %>%
+  epred_draws(
+    newdata = newdata_id,
+    re_formula = NA
+  )
+
+contrast_algae_id <- compute_reversibility_id(
+  draws_algae_id
+) %>%
+  mutate(metric = "Algae")
+
+```
+
+### Combine posterior reversibility distributions + Standardize
+
+```{r}
+reversibility_id_df <- bind_rows(
+  contrast_abundance_id,
+  contrast_shannon_id,
+  contrast_beta_id,
+  contrast_algae_id
+)
+
+# Standardize reversibility within each response variable for visualization
+reversibility_id_df <- reversibility_id_df %>%
+  group_by(metric) %>%
+  mutate(
+    reversibility_std =
+      reversibility / sd(reversibility, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+```
+
+
+##Spider Plot 
+
+
+```{r}
+#| label: figure-colors
+
+
+# Recovery scenario colors
+recovery_cols <- c(
+  "Compounding"      = "#0B4A8B",
+  "No recovery"      = "#5E90E8",
+  "Partial recovery" = "#1AB5A8",
+  "Perfect recovery" = "#D8C93C",
+  "Overcompensation" = "#9ACD00"
+)
+
+# Predator identity colors
+pred_colors <- c(
+  "None"        = "#4D4D4D",
+  "Blepharisma" = "#D10F8C",
+  "Euplotes"    = "#E85D04",
+  "Both"        = "#6A51A3"
+)
+```
+
+```{r}
+#| label: spider-setup
+
+# ------------------------------------------------------------------------------
+# Spider plot axes
+# ------------------------------------------------------------------------------
+
+axis_min <- -2
+axis_max <-  2
+
+text_col <- "black"
+grid_col <- "#EAF2FA"
+
+metric_order <- c(
+  "Abundance",
+  "Shannon",
+  "Beta",
+  "Algae"
+)
+
+axis_df <- data.frame(
+  metric = factor(
+    metric_order,
+    levels = metric_order
+  ),
+
+  metric_label = c(
+    "Bacterial\nabundance",
+    "Bacterial\ndiversity",
+    "Bacterial\ncomposition",
+    "Algal\nabundance"
+  ),
+
+  angle = c(
+    pi / 2,
+    pi,
+    0,
+    3 * pi / 2
+  )
+)
+
+
+# ------------------------------------------------------------------------------
+# Summarize posterior reversibility distributions
+# ------------------------------------------------------------------------------
+
+radar_df <- reversibility_id_df %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = metric_order
+    ),
+
+    ID_of_predators = factor(
+      ID_of_predators,
+      levels = c(
+        "None",
+        "Blepharisma",
+        "Euplotes",
+        "Both"
+      )
+    )
+  ) %>%
+  group_by(
+    ID_of_predators,
+    metric
+  ) %>%
+  summarise(
+    RI_median = median(
+      reversibility_std,
+      na.rm = TRUE
+    ),
+
+    RI_low = quantile(
+      reversibility_std,
+      0.05,
+      na.rm = TRUE
+    ),
+
+    RI_high = quantile(
+      reversibility_std,
+      0.95,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------------------------
+# Convert standardized reversibility to radial coordinates
+# ------------------------------------------------------------------------------
+
+radar_df <- radar_df %>%
+  left_join(
+    axis_df,
+    by = "metric"
+  ) %>%
+  arrange(
+    ID_of_predators,
+    angle
+  ) %>%
+  mutate(
+    r_plot =
+      (RI_median - axis_min) /
+      (axis_max - axis_min),
+
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  )
+
+
+# Close each predator-identity polygon
+radar_closed <- radar_df %>%
+  group_by(ID_of_predators) %>%
+  arrange(
+    angle,
+    .by_group = TRUE
+  ) %>%
+  bind_rows(
+    slice(., 1)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+#| label: spider-grid
+
+grid_levels <- seq(
+  0.2,
+  1,
+  by = 0.2
+)
+
+
+
+# Spider grid
+grid_closed <- expand.grid(
+  r_plot = grid_levels,
+  angle = axis_df$angle
+) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  ) %>%
+  arrange(
+    r_plot,
+    angle
+  ) %>%
+  group_by(r_plot) %>%
+  bind_rows(
+    slice(., 1)
+  ) %>%
+  ungroup()
+
+
+# Radial axis lines
+axis_lines <- axis_df %>%
+  crossing(
+    r_plot = c(0, 1)
+  ) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  )
+
+
+# RI = 0 reference polygon
+zero_grid <- expand.grid(
+  r_plot =
+    (0 - axis_min) /
+    (axis_max - axis_min),
+
+  angle = axis_df$angle
+) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  ) %>%
+  arrange(angle) %>%
+  bind_rows(
+    slice(., 1)
+  )
+
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 8
+
+axis_min <- -2
+axis_max <- 2
+
+# Spider plot colors
+text_col <- "black"
+grid_col <- "#EAF2FA"
+
+
+spider_fig4 <- ggplot() +
+
+  # Grid
+  geom_path(
+    data = grid_closed,
+    aes(
+      x = x,
+      y = y,
+      group = r_plot
+    ),
+    color = grid_col,
+    linewidth = 0.35
+  ) +
+
+  # Axis lines
+  geom_line(
+    data = axis_lines,
+    aes(
+      x = x,
+      y = y,
+      group = metric
+    ),
+    color = grid_col,
+    linewidth = 0.35
+  ) +
+
+  # RI = 0
+  geom_path(
+    data = zero_grid,
+    aes(
+      x = x,
+      y = y
+    ),
+    color = "black",
+    linewidth = 0.8,
+    linetype = "11"
+  ) +
+
+  # RI = 0 label
+  geom_text(
+    data = data.frame(
+      x = 0.42,
+      y = -0.18,
+      label = "RI = 0"
+    ),
+    aes(
+      x = x,
+      y = y,
+      label = label
+    ),
+    color = "black",
+    size = 5,
+    fontface = "bold",
+    angle = 45
+  ) +
+
+  # Predator identity polygons
+  geom_path(
+    data = radar_closed,
+    aes(
+      x = x,
+      y = y,
+      color = ID_of_predators,
+      group = ID_of_predators
+    ),
+    linewidth = 2,
+    linejoin = "round"
+  ) +
+
+  # Axis labels
+  geom_text(
+    data = axis_df,
+    aes(
+      x = 1.23 * cos(angle),
+      y = 1.23 * sin(angle),
+      label = metric_label
+    ),
+    size = 10,
+    fontface = "bold",
+    color = text_col,
+    lineheight = 0.85
+  ) +
+
+  # Predator colors
+  scale_color_manual(
+    values = pred_colors
+  ) +
+
+  coord_equal(
+    xlim = c(-1.45, 1.45),
+    ylim = c(-1.45, 1.45),
+    clip = "off"
+  ) +
+
+  labs(
+    x = NULL,
+    y = NULL,
+    color = NULL
+  ) +
+
+  theme_void(
+    base_size = 18
+  ) +
+
+  theme(
+    plot.background = element_rect(
+      fill = "transparent",
+      color = NA
+    ),
+
+    panel.background = element_rect(
+      fill = "transparent",
+      color = NA
+    ),
+
+    legend.position = "none",
+
+    plot.margin = margin(
+      40,
+      40,
+      40,
+      40
+    )
+  )
+
+
+spider_fig4
+```
+## Posterior Probability Distributions 
+
+```{r}
+#| label: recovery-scenarios-predator-id
+
+# ---- Panel B: cooling scenario probabilities ----
+
+metric_levels <- c(
+  "Bacterial abundance",
+  "Shannon diversity",
+  "Beta diversity",
+  "Algal abundance"
+)
+
+
+# Combine posterior draws across response variables
+plot_cat_df <- bind_rows(
+  contrast_abundance_id,
+  contrast_shannon_id,
+  contrast_beta_id,
+  contrast_algae_id
+)
+
+# 5% tolerance for recovery classification
+tol <- 0.05
+
+plot_cat_df <- plot_cat_df %>%
+  mutate(
+    RI_category = case_when(
+
+      # No recovery
+      abs(cooling_corrected) <
+        tol * abs(warming_corrected) ~
+        "No recovery",
+
+      # Perfect recovery
+      abs(warming_corrected + cooling_corrected) <
+        tol * abs(warming_corrected) ~
+        "Perfect recovery",
+
+      # Overcompensation
+      (warming_corrected - cooling_corrected) < 0 ~
+        "Overcompensation",
+
+      # Partial recovery
+      sign(cooling_corrected) != sign(warming_corrected) &
+        abs(cooling_corrected) < abs(warming_corrected) ~
+        "Partial recovery",
+      # Compounding
+      TRUE ~
+        "Compounding"
+    )
+  )
+
+
+ri_levels <- c(
+  "Compounding",
+  "No recovery",
+  "Partial recovery",
+  "Complete reversibility",
+  "Overcompensation"
+)
+
+ri_colors_cb <- c(
+  "Compounding"            = "#0B4A8B",
+  "No recovery"            = "#5E90E8",
+  "Partial recovery"       = "#1AB5A8",
+  "Complete reversibility" = "#D8C93C",
+  "Overcompensation"       = "#9ACD00"
+)
+```
+
+```{r}
+#| label: recovery-probabilities-predator-id
+
+prob_df <- plot_cat_df %>%
+  count(
+    metric,
+    ID_of_predators,
+    RI_category
+  ) %>%
+  group_by(
+    metric,
+    ID_of_predators
+  ) %>%
+  mutate(
+    prob = n / sum(n)
+  ) %>%
+  ungroup() %>%
+  mutate(
+
+    ID_of_predators = factor(
+      ID_of_predators,
+      levels = c(
+        "None",
+        "Euplotes",
+        "Blepharisma",
+        "Both"
+      )
+    ),
+
+    RI_category = factor(
+      RI_category,
+      levels = c(
+        "Overcompensation",
+        "Perfect recovery",
+        "Partial recovery",
+        "No recovery",
+        "Compounding"
+      )
+    ),
+
+    metric = factor(
+      metric,
+      levels = c(
+        "Abundance",
+        "Shannon",
+        "Beta",
+        "Algae"
+      )
+    )
+  ) %>%
+  filter(
+    !is.na(metric)
+  )
+
+# ----------------------------
+# Plot Formatting
+# ----------------------------
+
+bar_width <- 0.7
+
+boundary_df <- prob_df %>%
+  filter(
+    RI_category == "Overcompensation"
+  ) %>%
+  group_by(
+    metric,
+    ID_of_predators
+  ) %>%
+  summarise(
+    y_boundary = sum(prob),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    x_num = as.numeric(metric),
+    x_start = x_num - bar_width / 2,
+    x_end = x_num + bar_width / 2
+  )
+
+scale_x_discrete(
+  labels = c(
+    "Bacterial abundance" = "Bacterial\nAbundance",
+    "Shannon diversity"   = "Bacterial\nDiversity",
+    "Beta diversity"      = "Bacterial\nComposition",
+    "Algal abundance"     = "Algal\nAbundance"
+  )
+)
+
+```
+
+```{r}
+#| label: panel-b-figure4
+#| fig-width: 13.5
+#| fig-height: 8
+
+panel_B_fig4 <- ggplot(
+  prob_df,
+  aes(
+    x = metric,
+    y = prob,
+    fill = RI_category
+  )
+) +
+
+  geom_col(
+    width = 0.9,
+    color = NA,
+    linewidth = 0,
+    position = position_stack(reverse = TRUE)
+  ) +
+
+  facet_wrap(
+    ~ID_of_predators,
+    nrow = 2,
+    as.table = TRUE,
+    drop = FALSE
+  ) +
+
+  scale_fill_manual(
+    values = recovery_cols
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(
+      accuracy = 1
+    ),
+    expand = expansion(
+      mult = c(0, 0.02)
+    )
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Abundance" = "Bac.\nAbundance",
+      "Shannon"   = "Bac.\nDiversity",
+      "Beta"      = "Bac.\nComposition",
+      "Algae"     = "Algal\nAbundance"
+    )
+  ) +
+
+  labs(
+    x = NULL,
+    y = "Probability",
+    fill = "Recovery Scenario"
+  ) +
+
+  geom_segment(
+    data = boundary_df,
+    aes(
+      x = x_start,
+      xend = x_end,
+      y = y_boundary,
+      yend = y_boundary
+    ),
+    inherit.aes = FALSE,
+    color = "#D8C93C",
+    linewidth = 1.2
+  ) + 
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+
+    strip.text = element_text(
+      size = 20,
+      face = "bold"
+    ),
+
+    legend.position = "none",
+
+    legend.text = element_text(
+      size = 27
+    ),
+
+    axis.text.x = element_text(
+      size = 25,
+      face = "bold",
+      angle = 30,
+      hjust = 1,
+      vjust = 1
+    ),
+
+    axis.text.y = element_text(
+      size = 25
+    ),
+
+    axis.title.y = element_text(
+      size = 24,
+      face = "bold"
+    ),
+    panel.spacing.x = unit(
+      0.5,
+      "lines"
+    ),
+
+    panel.spacing.y = unit(
+      0.75,
+      "lines"
+    ),
+
+    plot.background = element_rect(
+      fill = "transparent",
+      color = NA
+    ),
+
+    panel.background = element_rect(
+      fill = "transparent",
+      color = NA
+    )
+  )
+
+panel_B_fig4
+
+```
+```{r}
+#| fig-width: 18
+#| fig-height: 10
+
+# -----------------------------------------------
+# Saving the plots
+# -----------------------------------------------
+
+
+
+## Final Figure
+
+
+library(patchwork)
+
+figure_4 <- spider_fig4 + panel_B_fig4 +
+  plot_layout(
+    widths = c(1, 1.7)
+  ) +
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+figure_4
+
+# ------------------------------------------------------------
+# Save individual figure panels
+# ------------------------------------------------------------
+dir.create(
+  "Final_Bayesian_Models/Figures",
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+# Spider plot
+ggsave(
+  filename = "Final_Bayesian_Models/Figures/spider_fig4.pdf",
+  plot = spider_fig4,
+  width = 8,
+  height = 8,
+  units = "in",
+  device = cairo_pdf,
+  bg = "transparent"
+)
+
+# Recovery scenario panel
+ggsave(
+  filename = "Final_Bayesian_Models/Figures/panel_B_fig4.pdf",
+  plot = panel_B_fig4,
+  width = 13.5,
+  height = 8,
+  units = "in",
+  device = cairo_pdf,
+  bg = "transparent"
+)
+
+# Combined Figure 4
+ggsave(
+  filename = "Final_Bayesian_Models/Figures/Figure_4.pdf",
+  plot = figure_4,
+  width = 18,
+  height = 10,
+  units = "in",
+  device = cairo_pdf,
+  bg = "transparent"
+)
+
+```
+
+
+
+
+
+

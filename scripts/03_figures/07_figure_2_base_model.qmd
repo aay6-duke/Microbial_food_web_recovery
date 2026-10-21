@@ -1,0 +1,809 @@
+---
+title: "Bayesian_Model_Summaries"
+format: html
+---
+
+# Loading in the data models
+
+```{r}
+#| label: setup
+
+setwd("C:/Users/aay6/Desktop/Blepharisma_Warming/Bleph_warming_Oct_2023_FlowCytometer/All_data")
+
+library(tidyverse)
+library(brms)
+library(tidybayes)
+library(posterior)
+library(bayesplot)
+library(loo)
+library(scales)
+
+theme_set(theme_classic())
+
+# Load data used for posterior predictions and figures
+algae <- read_csv("All_Flowcytometer_algaeOnly.csv") %>%
+  select(-any_of(c("V1", "...1", "...2")))
+
+df <- read_csv("full_recluster_97p5_filtered.csv")
+```
+
+```{r}
+#| label: load-models
+
+# Directory containing final Bayesian model fits
+model_dir <- "Final_Bayesian_Models/Models"
+
+
+# ==============================================================================
+# Bacterial abundance
+# ==============================================================================
+
+fit_bact_base <- readRDS(
+  file.path(model_dir, "base_abundance.rds")
+)
+
+fit_bact_id <- readRDS(
+  file.path(model_dir, "bact_abundance_id.rds")
+)
+
+fit_bact_rich <- readRDS(
+  file.path(model_dir, "bact_abundance_rich.rds")
+)
+
+fit_bact_algae <- readRDS(
+  file.path(model_dir, "bact_abundance_algae.rds")
+)
+
+fit_bact_id_algae <- readRDS(
+  file.path(model_dir, "bact_abundance_id_alg.rds")
+)
+
+fit_bact_rich_algae <- readRDS(
+  file.path(model_dir, "bact_abundance_rich_alg.rds")
+)
+
+
+# ==============================================================================
+# Shannon diversity
+# ==============================================================================
+
+fit_shannon_base <- readRDS(
+  file.path(model_dir, "fit_shannon_base.rds")
+)
+
+fit_shannon_id <- readRDS(
+  file.path(model_dir, "fit_shannon_id.rds")
+)
+
+fit_shannon_algae <- readRDS(
+  file.path(model_dir, "fit_shannon_algae.rds")
+)
+
+fit_shannon_rich_algae <- readRDS(
+  file.path(model_dir, "fit_shannon_rich_algae.rds")
+)
+
+fit_shannon_id_separate_interactions <- readRDS(
+  file.path(model_dir, "fit_shannon_id_separate_interactions.rds")
+)
+
+fit_shannon_id_fourway_interaction <- readRDS(
+  file.path(model_dir, "fit_shannon_id_fourway_interaction.rds")
+)
+
+
+# ==============================================================================
+# Beta diversity
+# ==============================================================================
+
+fit_beta_base <- readRDS(
+  file.path(model_dir, "fit_beta_simple.rds")
+)
+
+fit_beta_id <- readRDS(
+  file.path(model_dir, "fit_beta_id.rds")
+)
+
+fit_beta_rich <- readRDS(
+  file.path(model_dir, "fit_beta_rich.rds")
+)
+
+fit_beta_algae <- readRDS(
+  file.path(model_dir, "fit_beta_algae.rds")
+)
+
+fit_beta_id_separate_interactions <- readRDS(
+  file.path(model_dir, "fit_beta_separate_interactions.rds")
+)
+
+fit_beta_id_fourway_interaction <- readRDS(
+  file.path(model_dir, "fit_beta_fourway_interaction.rds")
+)
+
+fit_beta_rich_separate_interactions <- readRDS(
+  file.path(model_dir, "fit_beta_rich_separate_interactions.rds")
+)
+
+
+# ==============================================================================
+# Algal abundance
+# ==============================================================================
+
+fit_algae_base <- readRDS(
+  file.path(model_dir, "fit_algae_base.rds")
+)
+
+fit_algae_id <- readRDS(
+  file.path(model_dir, "fit_algae_id.rds")
+)
+
+# fit_algae_rich will be added once the final model run is complete.
+```
+
+# Calculate Reversibility Index
+
+```{r}
+#| label: calculate-reversibility
+
+# Calculate warming and recovery responses for each posterior draw.
+# Changes are corrected for concurrent temporal changes in the stable treatment.
+# Reversibility is the difference between the corrected warming and recovery
+# responses.
+
+compute_reversibility <- function(draws_df) {
+
+  draws_df %>%
+    group_by(.draw) %>%
+    summarise(
+
+      # Change during warming
+      warming_change =
+        mean(.epred[Temperature == "Warming" & Day == 14]) -
+        mean(.epred[Temperature == "Warming" & Day == 7]),
+
+      # Change during cooling
+      cooling_change =
+        mean(.epred[Temperature == "Recovery" & Day == 28]) -
+        mean(.epred[Temperature == "Recovery" & Day == 21]),
+
+      # Corresponding change in the stable treatment during warming
+      stable_warming =
+        mean(.epred[Temperature == "Stable" & Day == 14]) -
+        mean(.epred[Temperature == "Stable" & Day == 7]),
+
+      # Corresponding change in the stable treatment during cooling
+      stable_cooling =
+        mean(.epred[Temperature == "Stable" & Day == 28]) -
+        mean(.epred[Temperature == "Stable" & Day == 21]),
+
+      .groups = "drop"
+    ) %>%
+    mutate(
+      warming_corrected =
+        warming_change - stable_warming,
+
+      cooling_corrected =
+        cooling_change - stable_cooling,
+
+      reversibility =
+        cooling_corrected - warming_corrected
+    )
+}
+```
+
+# Base Model (Figure 2)
+##Create Prediction Grid
+
+```{r}
+newdata_base <- expand.grid(
+  Temperature = c("Stable", "Warming", "Recovery"),
+  Day = c(7, 14, 21, 28),
+  Jar = NA,
+  re_formula = NA
+)
+```
+
+###Bacterial Abundance
+
+```{r}
+draws_abundance <- fit_bact_base %>%
+  epred_draws(
+    newdata = newdata_base,
+    re_formula = NA
+  )
+
+contrast_abundance <- compute_reversibility(
+  draws_abundance
+) %>%
+  mutate(metric = "Bacterial abundance")
+```
+
+###Bacterial Diversity
+```{r}
+draws_shannon <- fit_shannon_base %>%
+  epred_draws(
+    newdata = newdata_base,
+    re_formula = NA
+  )
+
+contrast_shannon <- compute_reversibility(
+  draws_shannon
+) %>%
+  mutate(metric = "Shannon diversity")
+```
+
+### Bacterial Composition
+```{r}
+draws_beta <- fit_beta_base %>%
+  epred_draws(
+    newdata = newdata_base,
+    re_formula = NA
+  )
+
+contrast_beta <- compute_reversibility(
+  draws_beta
+) %>%
+  mutate(metric = "Beta diversity")
+```
+### Algal Abundance
+```{r}
+draws_algae <- fit_algae_base %>%
+  epred_draws(
+    newdata = newdata_base,
+    re_formula = NA
+  )
+
+contrast_algae <- compute_reversibility(
+  draws_algae
+) %>%
+  mutate(metric = "Algal abundance")
+
+```
+
+### Combine posterior reversibility distributions
+
+```{r}
+reversibility_df <- bind_rows(
+  contrast_abundance,
+  contrast_shannon,
+  contrast_beta,
+  contrast_algae
+)
+```
+
+##Spider Plot 
+
+```{r}
+## Spider Plot
+
+# ------------------------------------------------------------------------------
+# Standardize reversibility within each response variable
+# ------------------------------------------------------------------------------
+
+# Response variables occur on different measurement scales.
+# Reversibility is standardized by the posterior SD within each response
+# so that responses can be displayed on a common scale.
+
+radar_draws <- reversibility_df %>%
+  group_by(metric) %>%
+  mutate(
+    reversibility_std =
+      reversibility / sd(reversibility, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+# ------------------------------------------------------------------------------
+# Summarize posterior distributions
+# ------------------------------------------------------------------------------
+
+radar_df <- radar_draws %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c(
+        "Bacterial abundance",
+        "Shannon diversity",
+        "Beta diversity",
+        "Algal abundance"
+      )
+    )
+  ) %>%
+  group_by(metric) %>%
+  summarise(
+    RI_median = median(
+      reversibility_std,
+      na.rm = TRUE
+    ),
+
+    RI_low = quantile(
+      reversibility_std,
+      0.05,
+      na.rm = TRUE
+    ),
+
+    RI_high = quantile(
+      reversibility_std,
+      0.95,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------------------------
+# Spider-plot axes
+# ------------------------------------------------------------------------------
+
+axis_df <- data.frame(
+  metric = factor(
+    c(
+      "Bacterial abundance",
+      "Shannon diversity",
+      "Beta diversity",
+      "Algal abundance"
+    ),
+    levels = c(
+      "Bacterial abundance",
+      "Shannon diversity",
+      "Beta diversity",
+      "Algal abundance"
+    )
+  ),
+
+  metric_label = c(
+    "Bacterial\nabundance",
+    "Bacterial\ndiversity",
+    "Bacterial\ncomposition",
+    "Algal\nabundance"
+  ),
+
+  angle = c(
+    pi / 2,
+    pi,
+    0,
+    3 * pi / 2
+  )
+)
+
+
+# ------------------------------------------------------------------------------
+# Common radial scale
+# ------------------------------------------------------------------------------
+
+axis_min <- -2
+axis_max <- 3
+
+radar_df <- radar_df %>%
+  left_join(
+    axis_df,
+    by = "metric"
+  ) %>%
+  arrange(angle) %>%
+  mutate(
+    r_plot =
+      (RI_median - axis_min) /
+      (axis_max - axis_min),
+
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  )
+
+
+# Close polygon
+radar_closed <- radar_df %>%
+  arrange(angle) %>%
+  bind_rows(slice(., 1))
+
+
+# ------------------------------------------------------------------------------
+# Spider-plot grid
+# ------------------------------------------------------------------------------
+
+grid_levels <- seq(
+  0.2,
+  1,
+  by = 0.2
+)
+
+grid_closed <- expand.grid(
+  r_plot = grid_levels,
+  angle = axis_df$angle
+) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  ) %>%
+  arrange(
+    r_plot,
+    angle
+  ) %>%
+  group_by(r_plot) %>%
+  bind_rows(
+    slice(., 1)
+  ) %>%
+  ungroup()
+
+# Fixed radar scale
+
+axis_min <- -2
+axis_max <- 3
+
+# Spider plot colors
+text_col <- "black"
+grid_col <- "#EAF2FA"
+
+# Radial axis lines
+axis_lines <- axis_df %>%
+  tidyr::crossing(
+    r_plot = c(0, 1)
+  ) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  )
+
+
+# Zero-reversibility reference polygon
+zero_grid <- expand.grid(
+  r_plot =
+    (0 - axis_min) /
+    (axis_max - axis_min),
+
+  angle = axis_df$angle
+) %>%
+  mutate(
+    x = r_plot * cos(angle),
+    y = r_plot * sin(angle)
+  ) %>%
+  arrange(angle) %>%
+  bind_rows(
+    slice(., 1)
+  )
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 8
+
+# ----------------------------------------------------------------------------
+# Spider Plot - Base Model
+# ----------------------------------------------------------------------------
+
+base_spider <- ggplot() +
+
+  geom_path(
+    data = grid_closed,
+    aes(x = x, y = y, group = r_plot),
+    color = grid_col,
+    linewidth = 0.35
+  ) +
+
+  geom_line(
+    data = axis_lines,
+    aes(x = x, y = y, group = metric),
+    color = grid_col,
+    linewidth = 0.35
+  ) +
+
+  geom_path(
+    data = zero_grid,
+    aes(x = x, y = y),
+    color = "black",
+    linewidth = 0.8,
+    linetype = "11"
+  ) +
+
+  geom_text(
+    data = data.frame(
+      x = 0.42,
+      y = -0.18,
+      label = "RI = 0"
+    ),
+    aes(x = x, y = y, label = label),
+    color = "black",
+    size = 5,
+    fontface = "bold",
+    angle = 45
+  ) +
+
+  geom_path(
+    data = radar_closed,
+    aes(x = x, y = y),
+    color = "#4D4D4D",
+    linewidth = 2,
+    linejoin = "round"
+  ) +
+
+  geom_text(
+    data = axis_df,
+    aes(
+      x = 1.23 * cos(angle),
+      y = 1.23 * sin(angle),
+      label = metric_label
+    ),
+    size = 10,
+    fontface = "bold",
+    color = text_col,
+    lineheight = 0.85
+  ) +
+
+  coord_equal(
+    xlim = c(-1.45, 1.45),
+    ylim = c(-1.45, 1.45),
+    clip = "off"
+  ) +
+
+  labs(x = NULL, y = NULL) +
+
+  theme_void(base_size = 18) +
+
+  theme(
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    legend.position = "none",
+    plot.margin = margin(40, 40, 40, 40)
+  )
+
+base_spider
+```
+## Posterior Probability Distributions 
+
+```{r}
+# ---- Panel B: cooling scenario probabilities ----
+
+metric_levels <- c(
+  "Bacterial abundance",
+  "Shannon diversity",
+  "Beta diversity",
+  "Algal abundance"
+)
+
+# Combine posterior draws across response variables
+plot_cat_df <- bind_rows(
+  contrast_abundance,
+  contrast_shannon,
+  contrast_beta,
+  contrast_algae
+)
+
+# Tolerance used to classify approximately zero or complete reversal
+tol <- 0.05
+
+tol <- 0.05
+
+plot_cat_df <- plot_cat_df %>%
+  mutate(
+    RI_category = case_when(
+
+      abs(cooling_corrected) <
+        tol * abs(warming_corrected) ~
+        "No recovery",
+
+      abs(warming_corrected + cooling_corrected) <
+        tol * abs(warming_corrected) ~
+        "Complete reversibility",
+
+      (warming_corrected - cooling_corrected) < 0 ~
+        "Overcompensation",
+
+      sign(cooling_corrected) != sign(warming_corrected) &
+        abs(cooling_corrected) < abs(warming_corrected) ~
+        "Partial recovery",
+
+      TRUE ~
+        "Compounding"
+    )
+  )
+
+ri_levels <- c(
+  "Compounding",
+  "No recovery",
+  "Partial recovery",
+  "Complete reversibility",
+  "Overcompensation"
+)
+
+ri_colors_cb <- c(
+  "Compounding"            = "#0B4A8B",
+  "No recovery"            = "#5E90E8",
+  "Partial recovery"       = "#1AB5A8",
+  "Complete reversibility" = "#D8C93C",
+  "Overcompensation"       = "#9ACD00"
+)
+```
+
+```{r}
+# ----------------------------------------------------------
+# Calculate Posterior Probability of each recovery scenario
+# ----------------------------------------------------------
+
+prob_df <- plot_cat_df %>%
+  count(metric, RI_category) %>%
+  group_by(metric) %>%
+  mutate(
+    prob = n / sum(n)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = metric_levels
+    ),
+    RI_category = factor(
+      RI_category,
+      levels = ri_levels
+    )
+  ) %>%
+  filter(
+    !is.na(metric),
+    !is.na(RI_category)
+  )
+
+# ----------------------------
+# Plot Formatting
+# ----------------------------
+
+bar_width <- 0.7
+
+boundary_df <- prob_df %>%
+  group_by(metric) %>%
+  summarise(
+    y_boundary =
+      sum(prob[RI_category == "Overcompensation"]),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    x_num = as.numeric(metric),
+    x_start = x_num - bar_width / 2,
+    x_end = x_num + bar_width / 2
+  )
+
+scale_x_discrete(
+  labels = c(
+    "Bacterial abundance" = "Bacterial\nAbundance",
+    "Shannon diversity"   = "Bacterial\nDiversity",
+    "Beta diversity"      = "Bacterial\nComposition",
+    "Algal abundance"     = "Algal\nAbundance"
+  )
+)
+
+```
+
+```{r}
+# -------------------------------------------------------------
+# Plot Posterior Probabilities Recovery Scenarios - Base Model
+# -------------------------------------------------------------
+
+base_panel_B <- ggplot(prob_df, aes(x = metric, y = prob, fill = RI_category)) +
+  geom_col(
+    width = bar_width
+  ) +
+  geom_segment(
+    data = boundary_df,
+    aes(
+      x = x_start,
+      xend = x_end,
+      y = y_boundary,
+      yend = y_boundary
+    ),
+    inherit.aes = FALSE,
+    color = "#D8C93C",
+    linewidth = 1.2
+  ) +
+  scale_fill_manual(
+    values = ri_colors_cb,
+    breaks = ri_levels
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Abundance" = "Bacterial\nAbundance",
+      "Shannon"   = "Bacterial\nDiversity",
+      "Beta"      = "Bacterial\nComposition",
+      "Algae"     = "Algal\nAbundance"
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Probability",
+    fill = "Recovery Scenario"
+  ) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(
+      size = 20,
+      face = "bold"
+    ),
+    legend.position = "none",
+    legend.text = element_text(size = 14),
+    axis.text.x = element_text(
+      size = 18,
+      face = "bold",
+      angle = 30,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.text.y = element_text(size = 30),
+    axis.title.y = element_text(
+      size = 24,
+      face = "bold"
+    ),
+    panel.spacing.x = unit(1, "lines"),
+    panel.spacing.y = unit(3, "lines"),
+    plot.background = element_rect(
+      fill = "transparent",
+      color = NA
+    ),
+    panel.background = element_rect(
+      fill = "transparent",
+      color = NA
+    )
+  )
+
+base_panel_B
+```
+```{r}
+#| fig-width: 15
+#| fig-height: 10
+
+# -----------------------------------------------
+# Saving the plots
+# -----------------------------------------------
+
+
+
+## Final Figure
+
+
+library(patchwork)
+
+final_figure <- base_spider + base_panel_B +
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+final_figure
+
+# ------------------------------------------------------------
+# Save individual figure panels
+# ------------------------------------------------------------
+
+# Create figure directory
+dir.create(
+  "Final_Bayesian_Models/Figures",
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+# Spider plot
+ggsave(
+  filename = "Final_Bayesian_Models/Figures/base_spider.pdf",
+  plot = base_spider,
+  width = 8,
+  height = 8,
+  units = "in",
+  device = cairo_pdf
+)
+
+# Recovery scenario probability panel
+ggsave(
+  filename = "Final_Bayesian_Models/Figures/base_panel_B.pdf",
+  plot = base_panel_B,
+  width = 10,
+  height = 7,
+  units = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
